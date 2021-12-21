@@ -12,14 +12,10 @@ import torch.utils.data
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-
 from models.resnet import load_model
-from datasets.color_mnist import get_biased_mnist_dataloader
 from datasets.cub_dataset import WaterbirdDataset
-from datasets.celebA_dataset import get_celebA_dataloader, celebAOodDataset
 from utils import AverageMeter, accuracy
 import utils.svhn_loader as svhn
-from datasets.gaussian_dataset import GaussianDataset
 
 parser = argparse.ArgumentParser(description='OOD Detection Evaluation based on Energy-score')
 parser.add_argument('--name', default = 'erm_rebuttal', type=str, help='help identify checkpoint')

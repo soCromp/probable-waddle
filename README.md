@@ -34,3 +34,8 @@ should be called iSUN and LSUN directory called LSUN_resize.
 Simply run `./runexp.sh waterbird 0.9 7` to do an experiment. The first argument is the dataset,
 second argument is the amount of correlation between class and environment and the third
 argument is the GPU to use.
+
+The three trained checkpoints used for the paper's results are in 
+experiments/waterbird/pres*. To use them, change the `name` variable in runexp.sh 
+to pres1, pres2 or pres3 and comment out the training command (line 16). Note that
+some variance across runs is expected (occurs regardless of sparsification).

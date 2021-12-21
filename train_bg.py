@@ -11,9 +11,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from models.resnet import load_model
 from utils import AverageMeter, save_checkpoint, accuracy
-from datasets.color_mnist import get_biased_mnist_dataloader
 from datasets.cub_dataset import get_waterbird_dataloader
-from datasets.celebA_dataset import get_celebA_dataloader
 import math
 
 parser = argparse.ArgumentParser(description=' use resnet (pretrained)')
@@ -218,35 +216,15 @@ def main():
     log.addHandler(fileHandler)
     log.addHandler(streamHandler) 
 
-    if args.in_dataset == "color_mnist":
-        train_loader1 = get_biased_mnist_dataloader(args, root = './datasets/MNIST', batch_size=args.batch_size,
-                                        data_label_correlation= args.data_label_correlation,
-                                        n_confusing_labels= args.num_classes - 1,
-                                        train=True, partial=True, cmap = "1")
-        train_loader2 = get_biased_mnist_dataloader(args, root = './datasets/MNIST', batch_size=args.batch_size,
-                                        data_label_correlation= args.data_label_correlation,
-                                        n_confusing_labels= args.num_classes - 1,
-                                        train=True, partial=True, cmap = "2")
-        val_loader = get_biased_mnist_dataloader(args, root = './datasets/MNIST', batch_size=args.batch_size,
-                                        data_label_correlation= args.data_label_correlation,
-                                        n_confusing_labels= args.num_classes - 1,
-                                        train=False, partial=True, cmap = "1")
-    elif args.in_dataset == "waterbird":
+    if args.in_dataset == "waterbird":
         train_loader = get_waterbird_dataloader(args, data_label_correlation=args.data_label_correlation, split="train")
         val_loader = get_waterbird_dataloader(args, data_label_correlation=args.data_label_correlation, split="val")
-    elif args.in_dataset == "celebA":
-        train_loader = get_celebA_dataloader(args, split="train")
-        val_loader = get_celebA_dataloader(args, split="val")
 
     if args.model_arch == 'resnet18':
         pretrained = True
-        if args.in_dataset == 'color_mnist':
-            pretrained = False #True for celebA & waterbird ; False for Color_MNIST
         base_model = load_model(pretrained) 
     if torch.cuda.device_count() > 1:
         base_model = torch.nn.DataParallel(base_model)
-
-    # print(base_model)
 
     if args.method == "erm":
         model = base_model.cuda()
@@ -267,9 +245,7 @@ def main():
                     m.bias.requires_grad = False
     freeze_bn(model, freeze_bn_affine)
     
-    if args.in_dataset == "color_mnist":
-        train_loaders = [train_loader1, train_loader2]
-    elif args.in_dataset == "waterbird" or args.in_dataset == "celebA":
+    if args.in_dataset == "waterbird":
         train_loaders = [train_loader]
 
     for epoch in range(args.start_epoch, args.epochs):

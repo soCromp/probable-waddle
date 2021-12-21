@@ -12,14 +12,10 @@ import torch.utils.data
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-
 from models.resnet import load_model
-from datasets.color_mnist import get_biased_mnist_dataloader
 from datasets.cub_dataset import WaterbirdDataset
-from datasets.celebA_dataset import get_celebA_dataloader, celebAOodDataset
 from utils import AverageMeter, accuracy
 import utils.svhn_loader as svhn
-from datasets.gaussian_dataset import GaussianDataset
 
 parser = argparse.ArgumentParser(description='OOD Detection Evaluation based on Energy-score')
 parser.add_argument('--name', default = 'erm_rebuttal', type=str, help='help identify checkpoint')
@@ -48,12 +44,7 @@ parser.add_argument('--gpu-ids', default='6', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--multi-gpu', default=False, type=bool)
-parser.add_argument('--local_rank', default=-1, type=int,
-                        help='rank for the current node')
-parser.add_argument('--top', '-t', default=0, type=int)
-parser.add_argument('--custom_mask', '-cm', default=0, type=int, help='whether to use a specified custom mask. 0 means no, 1 means yes. Specity with cmb and cmt. If true, ignores top argument')
-parser.add_argument('--custom_mask_bottom', '-cmb', default = 200, type=int, help='In custom mask, everything before this unit is ignored')
-parser.add_argument('--custom_mask_top', '-cmt', default = 300, type=int, help='In custom mask, everything above this unit is ignored')
+parser.add_argument('--local_rank', default=-1, type=int, help='rank for the current node')
 parser.add_argument('--environment', '-env', default='0123', type=str)
 parser.add_argument('--dice', '-d', default=0, type=int, help='starting percentile of last weights to keep')
 
@@ -74,11 +65,11 @@ if torch.cuda.is_available():
 device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
 
 
-def get_ood_energy(args, model, val_loader, epoch, mask, log, method):
-    def edit_activation(mask, mod, inp, out):
-        return torch.mul(out, torch.tensor(mask, dtype=torch.float32).cuda())
+def get_ood_energy(args, model, val_loader, epoch, log, method):
+    def edit_activation(mod, inp, out):
+        return out
 
-    model.avgpool.register_forward_hook(partial(edit_activation, mask))
+    model.avgpool.register_forward_hook(partial(edit_activation))
 
     in_energy = AverageMeter()
     model.eval()
@@ -102,7 +93,7 @@ def get_ood_energy(args, model, val_loader, epoch, mask, log, method):
                         epoch, i, len(val_loader), in_energy=in_energy))
         return sum_energy
 
-def get_id_energy(args, model, val_loader, epoch, mask, log, method):
+def get_id_energy(args, model, val_loader, epoch, log, method):
     in_energy = AverageMeter()
     top1 = AverageMeter()
     acc_E = {0:AverageMeter(),
@@ -122,10 +113,10 @@ def get_id_energy(args, model, val_loader, epoch, mask, log, method):
     energy_nongrey = np.empty(0)
 
 
-    def edit_activation(mask, mod, inp, out):
-        return torch.mul(out, torch.tensor(mask, dtype=torch.float32).cuda())
+    def edit_activation(mod, inp, out):
+        return out
 
-    model.avgpool.register_forward_hook(partial(edit_activation, mask))
+    model.avgpool.register_forward_hook(partial(edit_activation))
 
     model.eval()
     log.debug("######## Start collecting energy score ########")
@@ -153,23 +144,6 @@ def get_id_energy(args, model, val_loader, epoch, mask, log, method):
             in_energy.update(e_s.mean(), len(labels)) 
             energy = np.concatenate((energy, e_s))
 
-            if i % args.print_freq == 0:
-                if args.in_dataset == 'color_mnist': 
-                    log.debug('Epoch: [{0}] Batch#[{1}/{2}]\t'
-                    'ID Energy {in_energy.val:.4f} ({in_energy.avg:.4f})\t'
-                    'red 0 {env_E[0].val:.4f} ({env_E[0].avg:.4f})\t'
-                    'green 0 {env_E[1].val:.4f} ({env_E[1].avg:.4f})\t'
-                    'red 1 {env_E[2].val:.4f} ({env_E[2].avg:.4f})\t'
-                    'green 1 {env_E[3].val:.4f} ({env_E[3].avg:.4f})\t'.format(
-                        epoch, i, len(val_loader), in_energy=in_energy, env_E = env_E))
-                elif args.in_dataset == 'celebA': 
-                    log.debug('Epoch: [{0}] Batch#[{1}/{2}]\t'
-                    'ID Energy {in_energy.val:.4f} ({in_energy.avg:.4f})\t'
-                    'nongrey hair F {env_E[0].val:.4f} ({env_E[0].avg:.4f})\t'
-                    'nongrey hair M {env_E[1].val:.4f} ({env_E[1].avg:.4f})\t'
-                    'gray hair F {env_E[2].val:.4f} ({env_E[2].avg:.4f})\t'
-                    'gray hair M {env_E[3].val:.4f} ({env_E[3].avg:.4f})\t'.format(
-                        epoch, i, len(val_loader), in_energy=in_energy, env_E = env_E))
         log.debug(' * Prec@1 {top1.avg:.3f}. Group 0: {e[0].avg}, 1: {e[1].avg}, 2: {e[2].avg}, 3: {e[3].avg}'.format(top1=top1, e=acc_E))
 
         return energy, energy_grey, energy_nongrey, all_envs, top1.avg, acc_E
@@ -195,70 +169,17 @@ def get_ood_loader(args, out_dataset, in_dataset = 'color_mnist'):
 
         root_dir  = args.root_dir
 
-        if in_dataset == 'color_mnist':   
-            if out_dataset == 'gaussian':
-                testsetout = GaussianDataset(dataset_size =10000, img_size = 32,
-                    transform=transforms.Normalize(mean=(0.5, 0.5, 0.5),
-                             std=(0.5, 0.5, 0.5)))
-            else:
-                testsetout = torchvision.datasets.ImageFolder(f"{root_dir}/{out_dataset}",
-                                            transform=small_transform)
-            subset = torch.utils.data.Subset(testsetout, np.random.choice(len(testsetout), 2000, replace=False))
-            testloaderOut = torch.utils.data.DataLoader(subset, batch_size=args.ood_batch_size,
-                                             shuffle=True, num_workers=4) 
-        elif in_dataset == 'waterbird' or in_dataset == 'celebA':
+        if in_dataset == 'waterbird':
             if out_dataset == "SVHN":
                 testsetout = svhn.SVHN(f"{root_dir}/{out_dataset}", split='test',
                                     transform=large_transform, download=False)
-            elif out_dataset == 'gaussian':
-                testsetout = GaussianDataset(dataset_size =10000, img_size = 224,
-                    transform=transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]))
-            elif  out_dataset == 'celebA_ood':
-                testsetout = celebAOodDataset()
             else:
                 testsetout = torchvision.datasets.ImageFolder(f"{root_dir}/{out_dataset}",
                                             transform=large_transform)
-            if out_dataset == 'celebA_ood':
-                subset = torch.utils.data.Subset(testsetout, np.random.choice(len(testsetout), 2000, replace=True))
-            else:
-                subset = torch.utils.data.Subset(testsetout, np.random.choice(len(testsetout), 2000, replace=False))
+            subset = torch.utils.data.Subset(testsetout, np.random.choice(len(testsetout), 2000, replace=False))
             testloaderOut = torch.utils.data.DataLoader(subset, batch_size=args.ood_batch_size,
-                                                shuffle=True, num_workers=4)           
-        else: 
-            testsetout = torchvision.datasets.ImageFolder("datasets/ood_datasets/{}".format(out_dataset),
-                                        transform= small_transform)
-            testloaderOut = torch.utils.data.DataLoader(testsetout, batch_size=args.ood_batch_size,
-                                             shuffle=True, num_workers=4)
+                                                shuffle=True, num_workers=4)
         return testloaderOut
-
-
-def getactivations(args):
-    shape = []
-    if args.model_arch == 'resnet18': shape = [1,512,1,1]
-    elif args.model_arch == 'resnet50': shape = [1,2048,1,1]
-
-    if args.top == 0 and args.custom_mask == 0: return np.ones(shape)
-    with open(f'experiments/{args.in_dataset}/{args.name}/activations/activations_id_at_epoch_{args.test_epochs}_e{args.environment}.npy', 'rb') as f:
-        acs = np.load(f)
-    
-    a = acs.mean(axis=0) # average ID activation pattern
-    order = np.argsort(a) # find which units are most "important"/contributing
-    mask = np.zeros(a.shape) # form a mask to only include top units
-
-    if args.custom_mask == 1:
-        lowerbound = args.custom_mask_bottom
-        upperbound = args.custom_mask_top
-        units = order[lowerbound:upperbound]
-        mask[units] = 1
-        print(units[:3])
-        
-    if args.top>0:
-        topinds = order[-args.top:]  # get just the top of these units
-        mask[topinds] = 1
-
-    mask = np.reshape(mask, shape) # to match with GAP layer output shape
-    print(mask.sum(), 'used units')
-    return mask
 
 
 def main():
@@ -276,16 +197,9 @@ def main():
     test_epochs = args.test_epochs.split()
     cpts_directory = "./experiments/{in_dataset}/{name}/checkpoints".format(in_dataset=args.in_dataset, name=args.name, exp=args.exp_name)
 
-    if args.in_dataset == "color_mnist":
-        val_loader = get_biased_mnist_dataloader(args, root = './datasets/MNIST', batch_size=args.batch_size,
-                                            data_label_correlation= args.data_label_correlation,
-                                            n_confusing_labels= args.num_classes - 1,
-                                            train=False, partial=True, cmap = "1")
-    elif args.in_dataset == "waterbird":
+    if args.in_dataset == "waterbird":
         val_dataset = WaterbirdDataset(data_correlation=args.data_label_correlation, split='test')
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=True)
-    elif args.in_dataset == "celebA":
-        val_loader = get_celebA_dataloader(args, split='test')
 
     # create model
     activation = None
@@ -297,11 +211,6 @@ def main():
         w = state_dict['linear.weight'].cpu().numpy()
 
         all_activ = []
-        # with open(f'experiments/{args.in_dataset}/{args.name}/activations/activations_id_at_epoch_{args.test_epochs}_e01.npy', 'rb') as f:
-        #     all_activ.append(np.load(f))
-        # with open(f'experiments/{args.in_dataset}/{args.name}/activations/activations_id_at_epoch_{args.test_epochs}_e23.npy', 'rb') as f:
-        #     all_activ.append(np.load(f))
-        # activation = np.concatenate([a.mean(axis=0).reshape((1,512)) for a in all_activ], axis=0)
         with open(f'experiments/{args.in_dataset}/{args.name}/activations/activations_id_at_epoch_{args.test_epochs}_e0.npy', 'rb') as f:
             all_activ.append(np.load(f))
         with open(f'experiments/{args.in_dataset}/{args.name}/activations/activations_id_at_epoch_{args.test_epochs}_e1.npy', 'rb') as f:
@@ -317,34 +226,15 @@ def main():
     if args.model_arch == 'resnet18':
         model = load_model(dice=args.dice, activation=activation)
         print(model.linear.weight.shape)
-    elif args.model_arch == 'resnet50':
-        model = load_model(arch='resnet50')
 
     model = model.cuda()
-
-    top = args.top # use this many of the last units
-    mask = getactivations(args)
-
     
-    if args.in_dataset == 'color_mnist':
-        out_datasets = ['partial_color_mnist_0&1', 'gaussian', 'dtd', 'iSUN', 'LSUN_resize']
-    elif args.in_dataset == 'waterbird':
+    if args.in_dataset == 'waterbird':
         out_datasets = ['placesbg', 'SVHN', 'iSUN', 'LSUN_resize']
-        # out_datasets = ['gaussian', 'placesbg', 'water', 'SVHN', 'iSUN', 'LSUN_resize']#, 'dtd']
-    elif args.in_dataset == 'color_mnist_multi':
-        out_datasets = ['partial_color_mnist_0&1']
-    elif args.in_dataset == 'celebA':
-        out_datasets = ['celebA_ood', 'SVHN', 'iSUN', 'LSUN_resize']
-
-    # cpts_directory = "./experiments/{in_dataset}/{name}/checkpoints".format(in_dataset=args.in_dataset, name=args.name, exp=args.exp_name)
-    # cpts_directory = "/nobackup/sonic/checkpoints/waterbird_temp/gdro_r_0_9/".format(in_dataset=args.in_dataset, name=args.name, exp=args.exp_name)
-    
     for test_epoch in test_epochs:
         cpts_dir = os.path.join(cpts_directory, "checkpoint_{epochs}.pth.tar".format(epochs=test_epoch))
         checkpoint = torch.load(cpts_dir)
         state_dict = checkpoint['state_dict_model']
-        # state_dict = {k[6:]:v for k, v in state_dict.items()} #all key names are prefaced with "model." so remove that
-        # print(state_dict.keys())
         if torch.cuda.device_count() == 1:
             new_state_dict = {}
             for k, v in state_dict.items():
@@ -363,9 +253,8 @@ def main():
         print("processing ID dataset")
 
         #********** normal procedure **********
-        id_energy, _, _, envs, acc, acc_E  = get_id_energy(args, model, val_loader, test_epoch, mask, log, method=args.method)
+        id_energy, _, _, envs, acc, acc_E  = get_id_energy(args, model, val_loader, test_epoch, log, method=args.method)
         
-        # with open(os.path.join(acc_dir, f'id_test_acc_epoch_{test_epoch}_d{args.dice}t{top}cm{args.custom_mask}b{args.custom_mask_bottom}t{args.custom_mask_top}_e{args.environment}.txt'), 'w') as f:
         with open(os.path.join(acc_dir, f'id_test_acc_epoch_{test_epoch}_d{args.dice}.txt'), 'w') as f:
             f.write('Overall\t' + str(acc.item())+'\n\n')
             f.write('Env 0\t' + str(acc_E[0].avg.item())+'\n')
@@ -382,14 +271,12 @@ def main():
             print([int(n) for n in c.split()])
             e = [id_energyenv[int(n)] for n in list(c)]
             eall = np.concatenate(e)
-            # with open(os.path.join(save_dir, f'energy_score_at_epoch_{test_epoch}__d{args.dice}top{top}cm{args.custom_mask}b{args.custom_mask_bottom}t{args.custom_mask_top}_e{args.environment}_scoreenv{c}.npy'), 'wb') as f:
             with open(os.path.join(save_dir, f'energy_score_at_epoch_{test_epoch}_d{args.dice}_scoreenv{c}.npy'), 'wb') as f:
                 np.save(f, eall)
         for out_dataset in out_datasets:
             print("processing OOD dataset ", out_dataset)
             testloaderOut = get_ood_loader(args, out_dataset, args.in_dataset)
-            ood_energy = get_ood_energy(args, model, testloaderOut, test_epoch, mask, log, method=args.method)
-            # with open(os.path.join(save_dir, f'energy_score_{out_dataset}_at_epoch_{test_epoch}__d{args.dice}top{top}cm{args.custom_mask}b{args.custom_mask_bottom}t{args.custom_mask_top}_e{args.environment}.npy'), 'wb') as f:
+            ood_energy = get_ood_energy(args, model, testloaderOut, test_epoch, log, method=args.method)
             with open(os.path.join(save_dir, f'energy_score_{out_dataset}_at_epoch_{test_epoch}_d{args.dice}.npy'), 'wb') as f:
                 np.save(f, ood_energy)
 
